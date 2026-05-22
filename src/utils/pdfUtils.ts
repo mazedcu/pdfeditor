@@ -12,92 +12,136 @@ function parseColor(color: string) {
   return rgb(r, g, b)
 }
 
-export async function burnAnnotations(pdfBytes: Uint8Array, annotations: Annotation[]): Promise<Uint8Array> {
+export async function burnAnnotations(pdfBytes: Uint8Array, annotations: Annotation[], scale = 1.5): Promise<Uint8Array> {
   const doc = await PDFDocument.load(pdfBytes)
   const pages = doc.getPages()
   const font = await doc.embedFont(StandardFonts.Helvetica)
 
-  annotations.forEach(a => {
-    if (a.pageIndex >= pages.length) return
-    const page = pages[a.pageIndex]
-    const pw = page.getWidth()
-    const ph = page.getHeight()
+  for (const a of annotations) {
+    try {
+      if (a.pageIndex >= pages.length) continue
+      const page = pages[a.pageIndex]
+      const ph = page.getHeight()
 
-    if (a.type === 'text') {
-      page.drawText(a.text, {
-        x: a.x * (pw / 1000),
-        y: ph - (a.y * (ph / 1000)) - a.fontSize,
-        size: a.fontSize,
-        color: parseColor(a.color),
-        font,
-      })
-    } else if (a.type === 'textEdit') {
-      // White-out old text area
-      page.drawRectangle({
-        x: a.x,
-        y: ph - a.y - a.height,
-        width: a.width,
-        height: a.height,
-        color: rgb(1, 1, 1),
-      })
-      page.drawText(a.newText, {
-        x: a.x,
-        y: ph - a.y - a.fontSize,
-        size: a.fontSize,
-        color: parseColor(a.color),
-        font,
-      })
-    } else if (a.type === 'objectDelete') {
-      page.drawRectangle({
-        x: a.x,
-        y: ph - a.y - a.height,
-        width: a.width,
-        height: a.height,
-        color: rgb(1, 1, 1),
-      })
-    } else if (a.type === 'highlight') {
-      page.drawRectangle({
-        x: a.x,
-        y: ph - a.y - a.height,
-        width: a.width,
-        height: a.height,
-        color: parseColor(a.color),
-        opacity: a.opacity,
-      })
-    } else if (a.type === 'shape') {
-      const strokeColor = parseColor(a.color)
-      if (a.tool === 'rectangle') {
+      // Convert viewport coords to PDF coords
+      const s = scale
+      const x = (n: number) => n / s
+      const y = (n: number) => ph - n / s
+      const sz = (n: number) => n / s
+
+      if (a.type === 'text') {
+        page.drawText(a.text, {
+          x: x(a.x),
+          y: y(a.y) - sz(a.fontSize),
+          size: sz(a.fontSize),
+          color: parseColor(a.color),
+          font,
+        })
+      } else if (a.type === 'textEdit') {
         page.drawRectangle({
-          x: Math.min(a.x, a.x + a.width),
-          y: ph - Math.max(a.y, a.y + a.height),
-          width: Math.abs(a.width),
-          height: Math.abs(a.height),
-          borderColor: strokeColor,
-          borderWidth: a.strokeWidth,
+          x: x(a.x),
+          y: y(a.y) - sz(a.height),
+          width: sz(a.width),
+          height: sz(a.height),
+          color: rgb(1, 1, 1),
         })
-      } else if (a.tool === 'line' || a.tool === 'arrow') {
-        page.drawLine({
-          start: { x: a.x, y: ph - a.y },
-          end: { x: a.x + a.width, y: ph - (a.y + a.height) },
-          thickness: a.strokeWidth,
-          color: strokeColor,
+        page.drawText(a.newText, {
+          x: x(a.x),
+          y: y(a.y) - sz(a.fontSize * 0.85),
+          size: sz(a.fontSize),
+          color: parseColor(a.color),
+          font,
         })
+      } else if (a.type === 'objectDelete') {
+        page.drawRectangle({
+          x: x(a.x),
+          y: y(a.y) - sz(a.height),
+          width: sz(a.width),
+          height: sz(a.height),
+          color: rgb(1, 1, 1),
+        })
+      } else if (a.type === 'highlight') {
+        page.drawRectangle({
+          x: x(a.x),
+          y: y(a.y) - sz(a.height),
+          width: sz(a.width),
+          height: sz(a.height),
+          color: parseColor(a.color),
+          opacity: a.opacity,
+        })
+      } else if (a.type === 'shape') {
+        const strokeColor = parseColor(a.color)
+        const sx = x(Math.min(a.x, a.x + a.width))
+        const sy = y(Math.max(a.y, a.y + a.height))
+        const sw = sz(Math.abs(a.width))
+        const sh = sz(Math.abs(a.height))
+        if (a.tool === 'rectangle') {
+          page.drawRectangle({ x: sx, y: sy, width: sw, height: sh, borderColor: strokeColor, borderWidth: a.strokeWidth })
+        } else if (a.tool === 'line' || a.tool === 'arrow') {
+          page.drawLine({
+            start: { x: x(a.x), y: y(a.y) },
+            end: { x: x(a.x + a.width), y: y(a.y + a.height) },
+            thickness: a.strokeWidth,
+            color: strokeColor,
+          })
+        }
+      } else if (a.type === 'image' || a.type === 'signature') {
+        try {
+          const imgData = a.imageData
+          let img
+          if (imgData.startsWith('data:image/png')) {
+            img = await doc.embedPng(imgData)
+          } else {
+            img = await doc.embedJpg(imgData)
+          }
+          page.drawImage(img, {
+            x: x(a.x),
+            y: y(a.y) - sz(a.height),
+            width: sz(a.width),
+            height: sz(a.height),
+          })
+        } catch { /* skip unsupported image format */ }
       }
-    }
-  })
+    } catch { /* skip invalid annotation */ }
+  }
 
   return doc.save()
 }
 
-export async function mergePdfs(basePdf: Uint8Array, files: File[]): Promise<Uint8Array> {
+export async function mergePdfs(basePdf: Uint8Array, files: File[], pageSelections?: Map<number, number[]>): Promise<Uint8Array> {
   const base = await PDFDocument.load(basePdf)
-  for (const file of files) {
+  for (let i = 0; i < files.length; i++) {
+    const file = files[i]
     const arr = await file.arrayBuffer()
     const other = await PDFDocument.load(new Uint8Array(arr))
-    const pages = await base.copyPages(other, other.getPageIndices())
+    const indices = pageSelections?.get(i) ?? other.getPageIndices()
+    const pages = await base.copyPages(other, indices)
     pages.forEach(p => base.addPage(p))
   }
   return base.save()
+}
+
+export async function mergeOrderedPdfs(
+  basePdf: Uint8Array,
+  orderedPages: { source: 'current' | number; pageIndex: number }[],
+  files: File[]
+): Promise<Uint8Array> {
+  const result = await PDFDocument.create()
+  const currentDoc = await PDFDocument.load(basePdf)
+  // Load all incoming files
+  const fileDocs: PDFDocument[] = []
+  for (const file of files) {
+    const arr = await file.arrayBuffer()
+    fileDocs.push(await PDFDocument.load(new Uint8Array(arr)))
+  }
+  // Copy pages in the specified order
+  for (const entry of orderedPages) {
+    const srcDoc = entry.source === 'current' ? currentDoc : fileDocs[entry.source]
+    if (!srcDoc) continue
+    const [copiedPage] = await result.copyPages(srcDoc, [entry.pageIndex])
+    result.addPage(copiedPage)
+  }
+  return result.save()
 }
 
 export async function splitPdf(pdfBytes: Uint8Array, pageIndices: number[]): Promise<Uint8Array> {

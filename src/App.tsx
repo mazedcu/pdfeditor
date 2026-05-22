@@ -10,7 +10,7 @@ import PdfViewer from './components/PdfViewer'
 import PageManager from './components/PageManager'
 import EditorPanel from './components/EditorPanel'
 import SignatureModal from './components/SignatureModal'
-import { mergePdfs, splitPdf, rotatePage, deletePage, burnAnnotations } from './utils/pdfUtils'
+import { mergeOrderedPdfs, splitPdf, rotatePage, deletePage, burnAnnotations } from './utils/pdfUtils'
 
 function App() {
   const [pdfDoc, setPdfDoc] = useState<PDFDocument | null>(null)
@@ -41,8 +41,8 @@ function App() {
     try {
       const arrayBuffer = await file.arrayBuffer()
       const bytes = new Uint8Array(arrayBuffer)
-      setPdfBytes(bytes)
-      const loaded = await PDFDocument.load(bytes)
+      setPdfBytes(new Uint8Array(bytes))
+      const loaded = await PDFDocument.load(new Uint8Array(bytes))
       setPdfDoc(loaded)
       setNumPages(loaded.getPageCount())
       setCurrentPage(1)
@@ -65,12 +65,12 @@ function App() {
     try {
       let saved: Uint8Array
       if (annotations.length > 0) {
-        saved = await burnAnnotations(pdfBytes, annotations)
+        saved = await burnAnnotations(new Uint8Array(pdfBytes), annotations, scale)
       } else {
-        const doc = await PDFDocument.load(pdfBytes)
+        const doc = await PDFDocument.load(new Uint8Array(pdfBytes))
         saved = await doc.save()
       }
-      const blob = new Blob([saved as unknown as BlobPart], { type: 'application/pdf' })
+      const blob = new Blob([new Uint8Array(saved)], { type: 'application/pdf' })
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url
@@ -82,23 +82,36 @@ function App() {
     } catch (err) {
       setError('Failed to save PDF: ' + (err as Error).message)
     }
-  }, [pdfDoc, pdfBytes, annotations])
+  }, [pdfDoc, pdfBytes, annotations, scale])
 
-  const handleMerge = useCallback(async (files: File[]) => {
+  const handleMergeOrdered = useCallback(async (
+    orderedPages: { source: 'current' | number; pageIndex: number }[],
+    files: File[]
+  ) => {
     if (!pdfBytes) return
-    const result = await mergePdfs(pdfBytes, files)
-    setPdfBytes(result)
-    const loaded = await PDFDocument.load(result)
+    const result = await mergeOrderedPdfs(new Uint8Array(pdfBytes), orderedPages, files)
+    const resultCopy = new Uint8Array(result)
+    setPdfBytes(resultCopy)
+    const loaded = await PDFDocument.load(new Uint8Array(result))
     setPdfDoc(loaded)
     setNumPages(loaded.getPageCount())
+    setCurrentPage(1)
     setAnnotations([])
+    setPages(loaded.getPages().map((p: any, i: number) => ({
+      index: i,
+      width: p.getWidth(),
+      height: p.getHeight(),
+      rotation: p.getRotation().angle,
+      scale: 1,
+    })))
   }, [pdfBytes])
 
   const handleSplit = useCallback(async (pageIndices: number[]) => {
     if (!pdfBytes) return
-    const result = await splitPdf(pdfBytes, pageIndices)
-    setPdfBytes(result)
-    const loaded = await PDFDocument.load(result)
+    const result = await splitPdf(new Uint8Array(pdfBytes), pageIndices)
+    const resultCopy = new Uint8Array(result)
+    setPdfBytes(resultCopy)
+    const loaded = await PDFDocument.load(new Uint8Array(result))
     setPdfDoc(loaded)
     setNumPages(loaded.getPageCount())
     setAnnotations([])
@@ -106,9 +119,10 @@ function App() {
 
   const handleRotate = useCallback(async (pageIndex: number, degrees: number) => {
     if (!pdfBytes) return
-    const result = await rotatePage(pdfBytes, pageIndex, degrees)
-    setPdfBytes(result)
-    const loaded = await PDFDocument.load(result)
+    const result = await rotatePage(new Uint8Array(pdfBytes), pageIndex, degrees)
+    const resultCopy = new Uint8Array(result)
+    setPdfBytes(resultCopy)
+    const loaded = await PDFDocument.load(new Uint8Array(result))
     setPdfDoc(loaded)
     setNumPages(loaded.getPageCount())
     setPages(prev => prev.map((p, i) => i === pageIndex ? { ...p, rotation: (p.rotation + degrees) % 360 } : p))
@@ -116,9 +130,10 @@ function App() {
 
   const handleDeletePage = useCallback(async (pageIndex: number) => {
     if (!pdfBytes) return
-    const result = await deletePage(pdfBytes, pageIndex)
-    setPdfBytes(result)
-    const loaded = await PDFDocument.load(result)
+    const result = await deletePage(new Uint8Array(pdfBytes), pageIndex)
+    const resultCopy = new Uint8Array(result)
+    setPdfBytes(resultCopy)
+    const loaded = await PDFDocument.load(new Uint8Array(result))
     setPdfDoc(loaded)
     setNumPages(loaded.getPageCount())
     if (currentPage > loaded.getPageCount()) setCurrentPage(loaded.getPageCount())
@@ -259,7 +274,7 @@ function App() {
             onPageSelect={goToPage}
             onRotate={handleRotate}
             onDelete={handleDeletePage}
-            onMerge={handleMerge}
+            onMergeOrdered={handleMergeOrdered}
             onSplit={handleSplit}
           />
         )}
@@ -281,6 +296,12 @@ function App() {
               }
             }}
           >
+            {error && pdfBytes && (
+              <div className="absolute top-16 left-1/2 -translate-x-1/2 bg-red-600 text-white px-4 py-2 rounded-lg shadow-lg z-50 text-sm">
+                {error}
+                <button onClick={() => setError(null)} className="ml-3 font-bold">×</button>
+              </div>
+            )}
             {pdfBytes ? (
               <PdfViewer
                 pdfBytes={pdfBytes}

@@ -77,7 +77,7 @@ export default function PdfViewer({ pdfBytes, currentPage, tool, scale, annotati
   const [movedObjs, setMovedObjs] = useState<Map<string, { x: number; y: number }>>(new Map())
 
   useEffect(() => {
-    pdfjs.getDocument({ data: pdfBytes }).promise.then(setPdf)
+    pdfjs.getDocument({ data: new Uint8Array(pdfBytes) }).promise.then(setPdf)
   }, [pdfBytes])
 
   useEffect(() => {
